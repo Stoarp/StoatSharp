@@ -1,0 +1,173 @@
+﻿using Optionals;
+using StoatSharp.Rest;
+using StoatSharp.Rest.Requests;
+using System.Collections.Generic;
+using System.Collections.Immutable;
+using System.Linq;
+using System.Net.Http;
+using System.Threading.Tasks;
+
+namespace StoatSharp;
+
+
+/// <summary>
+/// Stoat http/rest methods for group channels.
+/// </summary>
+public static class GroupChannelHelper
+{
+    /// <summary>
+    /// Create a group channel.
+    /// </summary>
+    /// <returns>
+    /// <see cref="GroupChannel"/>
+    /// </returns>
+    /// <exception cref="StoatArgumentException"></exception>
+    /// <exception cref="StoatRestException"></exception>
+    public static async Task<GroupChannel> CreateGroupChannelAsync(this StoatRestClient rest, string name, Option<string> description = null, bool isNsfw = false)
+    {
+        Conditions.ChannelNameLength(name, nameof(CreateGroupChannelAsync));
+
+        CreateChannelRequest Req = new CreateChannelRequest
+        {
+            name = name,
+            users = Optional.Some(System.Array.Empty<string>()),
+            nsfw = Optional.Some(isNsfw)
+        };
+        if (Conditions.OptionHasValue(description))
+        {
+            Conditions.ChannelDescriptionLength(name, nameof(CreateGroupChannelAsync));
+            Req.description = Optional.Some(description.Value);
+        }
+
+        ChannelJson Json = await rest.PostAsync<ChannelJson>("channels/create", Req);
+        return (GroupChannel)Channel.Create(rest.Client, Json);
+    }
+
+
+    /// <inheritdoc cref="GetGroupChannelUsersAsync(StoatRestClient, string)" />
+    public static Task<IReadOnlyCollection<User>?> GetUsersAsync(this GroupChannel channel)
+      => GetGroupChannelUsersAsync(channel.Client.Rest, channel.Id);
+
+    /// <inheritdoc cref="GetGroupChannelUsersAsync(StoatRestClient, string)" />
+    public static Task<IReadOnlyCollection<User>?> GetGroupChannelUsersAsync(this StoatRestClient rest, GroupChannel channel)
+      => GetGroupChannelUsersAsync(rest, channel.Id);
+
+    /// <summary>
+    /// Get a list of users for the group channel.
+    /// </summary>
+    /// <returns>
+    /// List of <see cref="User"/>
+    /// </returns>
+    /// <exception cref="StoatArgumentException"></exception>
+    /// <exception cref="StoatRestException"></exception>
+    public static async Task<IReadOnlyCollection<User>?> GetGroupChannelUsersAsync(this StoatRestClient rest, string channelId)
+    {
+        Conditions.ChannelIdLength(channelId, nameof(GetGroupChannelUsersAsync));
+
+        UserJson[]? List = await rest.GetAsync<UserJson[]>($"channels/{channelId}/members");
+        if (List == null)
+            return System.Array.Empty<User>();
+
+        return List.Select(x => new User(rest.Client, x)).ToImmutableArray();
+    }
+
+    /// <summary>
+    /// Get a group channel.
+    /// </summary>
+    /// <returns>
+    /// <see cref="GroupChannel"/> or <see langword="null" />
+    /// </returns>
+    /// <exception cref="StoatArgumentException"></exception>
+    /// <exception cref="StoatRestException"></exception>
+    public static Task<GroupChannel?> GetGroupChannelAsync(this StoatRestClient rest, string channelId)
+        => ChannelHelper.InternalGetChannelAsync<GroupChannel>(rest, channelId);
+
+    /// <summary>
+    /// Get a list of group channels the current user account is in.
+    /// </summary>
+    /// <returns>
+    /// List of <see cref="GroupChannel"/>
+    /// </returns>
+    /// <exception cref="StoatRestException"></exception>
+    public static async Task<IReadOnlyCollection<GroupChannel>?> GetGroupChannelsAsync(this StoatRestClient rest)
+    {
+        if (rest.Client.WebSocket != null)
+            return rest.Client.WebSocket.ChannelCache.Values.Where(x => x.Type == ChannelType.Group).Select(x => (GroupChannel)x).ToArray();
+
+        ChannelJson[]? Channels = await rest.GetAsync<ChannelJson[]>("/users/dms");
+        if (Channels == null)
+            return System.Array.Empty<GroupChannel>();
+
+        return Channels.Select(x => new GroupChannel(rest.Client, x)).ToImmutableArray();
+    }
+
+    /// <inheritdoc cref="LeaveGroupChannelAsync(StoatRestClient, string)" />
+    public static Task LeaveAsync(this GroupChannel channel)
+      => LeaveGroupChannelAsync(channel.Client.Rest, channel.Id);
+
+    /// <summary>
+    /// Leave a group channel or delete if you are the last user.
+    /// </summary>
+    /// <exception cref="StoatArgumentException"></exception>
+    /// <exception cref="StoatRestException"></exception>
+    public static async Task LeaveGroupChannelAsync(this StoatRestClient rest, string channelId)
+    {
+        Conditions.ChannelIdLength(channelId, nameof(LeaveGroupChannelAsync));
+
+        await rest.DeleteAsync($"/channels/{channelId}");
+    }
+
+    /// <inheritdoc cref="AddUserToGroupChannelAsync(StoatRestClient, string, string)" />
+    public static Task AddUserAsync(this GroupChannel channel, User user)
+        => AddUserToGroupChannelAsync(channel.Client.Rest, channel.Id, user.Id);
+
+    /// <inheritdoc cref="AddUserToGroupChannelAsync(StoatRestClient, string, string)" />
+    public static Task AddUserAsync(this GroupChannel channel, string userId)
+        => AddUserToGroupChannelAsync(channel.Client.Rest, channel.Id, userId);
+
+    /// <summary>
+    /// Add a user to the group channel.
+    /// </summary>
+    /// <exception cref="StoatArgumentException"></exception>
+    /// <exception cref="StoatRestException"></exception>
+    public static async Task AddUserToGroupChannelAsync(this StoatRestClient rest, string channelId, string userId)
+    {
+        Conditions.ChannelIdLength(channelId, nameof(AddUserToGroupChannelAsync));
+        Conditions.UserIdLength(userId, nameof(AddUserToGroupChannelAsync));
+
+        await rest.PutAsync<HttpResponseMessage>($"channels/{channelId}/recipients/{userId}");
+    }
+
+    /// <inheritdoc cref="RemoveUserFromGroupChannelAsync(StoatRestClient, string, string)" />
+    public static Task RemoveUserAsync(this GroupChannel channel, User user)
+        => RemoveUserFromGroupChannelAsync(channel.Client.Rest, channel.Id, user.Id);
+
+    /// <inheritdoc cref="RemoveUserFromGroupChannelAsync(StoatRestClient, string, string)" />
+    public static Task RemoveUserAsync(this GroupChannel channel, string userId)
+        => RemoveUserFromGroupChannelAsync(channel.Client.Rest, channel.Id, userId);
+
+    /// <summary>
+    /// Remove a user from the group channel.
+    /// </summary>
+    /// <exception cref="StoatArgumentException"></exception>
+    /// <exception cref="StoatRestException"></exception>
+    public static async Task RemoveUserFromGroupChannelAsync(this StoatRestClient rest, string channelId, string userId)
+    {
+        Conditions.ChannelIdLength(channelId, nameof(RemoveUserFromGroupChannelAsync));
+        Conditions.UserIdLength(userId, nameof(RemoveUserFromGroupChannelAsync));
+
+        await rest.DeleteAsync($"channels/{channelId}/recipients/{userId}");
+    }
+
+    /// <summary>
+    /// Update a group channel.
+    /// </summary>
+    /// <returns>
+    /// <see cref="GroupChannel"/>
+    /// </returns>
+    /// <exception cref="StoatArgumentException"></exception>
+    /// <exception cref="StoatRestException"></exception>
+    public static Task<GroupChannel> ModifyAsync(this GroupChannel channel, Option<string>? name = null, Option<string?>? desc = null, Option<string?>? iconId = null, Option<bool>? nsfw = null, Option<string>? owner = null)
+        => ChannelHelper.InternalModifyChannelAsync<GroupChannel>(channel.Client.Rest, channel.Id, name, desc, iconId, nsfw, owner);
+
+}

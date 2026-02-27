@@ -1,0 +1,362 @@
+﻿using Optionals;
+using StoatSharp.Rest;
+using StoatSharp.Rest.Requests;
+using System;
+using System.Collections.Generic;
+using System.Collections.Immutable;
+using System.Linq;
+using System.Threading.Tasks;
+
+#pragma warning disable IDE0130 // Namespace does not match folder structure
+namespace StoatSharp;
+#pragma warning restore IDE0130 // Namespace does not match folder structure
+
+
+/// <summary>
+/// Stoat http/rest methods for messages.
+/// </summary>
+public static class MessageHelper
+{
+    /// <inheritdoc cref="InternalSendMessageAsync(StoatRestClient, StoatWebhookClient?, string, string, Embed[], string[], MessageMasquerade, MessageInteractions, MessageReply[], MessageFlag?)" />
+    public static Task<UserMessage> SendMessageAsync(this Channel channel, string? text, Embed[]? embeds = null, string[]? attachments = null, MessageMasquerade? masquerade = null, MessageInteractions? interactions = null, MessageReply[]? replies = null, MessageFlag? flags = null)
+        => InternalSendMessageAsync(channel.Client.Rest, null, channel.Id, text, embeds, attachments, masquerade, interactions, replies, flags);
+
+    /// <inheritdoc cref="InternalSendMessageAsync(StoatRestClient, StoatWebhookClient?, string, string, Embed[], string[], MessageMasquerade, MessageInteractions, MessageReply[], MessageFlag?)" />
+    public static Task<UserMessage> SendMessageAsync(this StoatRestClient rest, string channelId, string? text, Embed[]? embeds = null, string[]? attachments = null, MessageMasquerade? masquerade = null, MessageInteractions? interactions = null, MessageReply[]? replies = null, MessageFlag? flags = null)
+        => InternalSendMessageAsync(rest.Client.Rest, null, channelId, text, embeds, attachments, masquerade, interactions, replies, flags);
+
+    /// <inheritdoc cref="InternalSendMessageAsync(StoatRestClient, StoatWebhookClient?, string, string, Embed[], string[], MessageMasquerade, MessageInteractions, MessageReply[], MessageFlag?)" />
+    public static Task<UserMessage> SendMessageAsync(this StoatWebhookClient webhook, string? text, Embed[]? embeds = null, string[]? attachments = null, MessageMasquerade? masquerade = null, MessageInteractions? interactions = null, MessageReply[]? replies = null, MessageFlag? flags = null)
+        => InternalSendMessageAsync(webhook.Client.Rest, webhook, null, text, embeds, attachments, masquerade, interactions, replies, flags);
+
+    /// <summary>
+    /// Send a message to the channel.
+    /// </summary>
+    /// <returns>
+    /// <see cref="UserMessage"/>
+    /// </returns>
+    /// <exception cref="StoatArgumentException"></exception>
+    /// <exception cref="StoatRestException"></exception>
+    internal static async Task<UserMessage> InternalSendMessageAsync(StoatRestClient rest, StoatWebhookClient? webhook, string channelId, string? text, Embed[]? embeds = null, string[]? attachments = null, MessageMasquerade? masquerade = null, MessageInteractions? interactions = null, MessageReply[]? replies = null, MessageFlag? flags = null)
+    {
+        if (webhook == null)
+            Conditions.ChannelIdLength(channelId, nameof(SendMessageAsync));
+
+        Conditions.MessagePropertiesEmpty(text, attachments, embeds, nameof(SendMessageAsync));
+
+        if (embeds != null)
+        {
+            IEnumerable<Task> uploadTasks = embeds.Where(x => !string.IsNullOrEmpty(x.Image)).Select(async x =>
+            {
+                if (x.Image.StartsWith("http://", StringComparison.OrdinalIgnoreCase) || x.Image.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+                {
+                    byte[] Bytes = await rest.FileHttpClient.GetByteArrayAsync(x.Image);
+                    try
+                    {
+                        FileAttachment Upload = await rest.UploadFileAsync(Bytes, "image.png", UploadFileType.Attachment);
+                        x.Image = Upload.Id;
+                    }
+                    catch { }
+                }
+                else if (x.Image.Contains('/') || x.Image.Contains('\\'))
+                {
+                    if (!System.IO.File.Exists(x.Image))
+                        throw new StoatArgumentException("Embed image url path does not exist.");
+                    try
+                    {
+                        FileAttachment Upload = await rest.UploadFileAsync(x.Image, UploadFileType.Attachment);
+                        x.Image = Upload.Id;
+                    }
+                    catch { }
+                }
+
+            });
+            if (uploadTasks.Any())
+                await Task.WhenAll(uploadTasks);
+        }
+
+        SendMessageRequest Req = new SendMessageRequest
+        {
+            //nonce = Guid.NewGuid().ToString()
+        };
+        if (!string.IsNullOrEmpty(text))
+        {
+            Conditions.MessageContentLength(text, nameof(SendMessageAsync));
+            Req.content = Optional.Some(text);
+        }
+        if (flags.HasValue && flags.Value.HasFlag(MessageFlag.SupressNotifications))
+            Req.flags = Optional.Some(flags.Value);
+
+        if (attachments != null && attachments.Any())
+        {
+            Req.attachments = Optional.Some(attachments);
+        }
+
+        if (embeds != null && embeds.Any())
+            Req.embeds = Optional.Some(embeds.Select(x => x.ToJson()).ToArray());
+
+        if (masquerade != null)
+        {
+            Conditions.MasqueradeNameLength(masquerade.Name, nameof(SendMessageAsync));
+            Conditions.MasqueradeAvatarUrlLength(masquerade.AvatarUrl, nameof(SendMessageAsync));
+
+            Req.masquerade = Optional.Some(masquerade.ToJson());
+        }
+
+        if (replies != null && replies.Any())
+        {
+            Conditions.ReplyListCount(replies, nameof(SendMessageAsync));
+            Req.replies = Optional.Some(replies.Select(x => x.ToJson()).ToArray());
+        }
+
+        if (interactions != null)
+            Req.interactions = Optional.Some(interactions.ToJson());
+
+
+        MessageJson Data = await rest.PostAsync<MessageJson>(webhook == null ? $"channels/{channelId}/messages" : webhook.Url, Req, webhook != null);
+        return (UserMessage)Message.Create(rest.Client, Data);
+    }
+
+    /// <inheritdoc cref="InternalSendFileAsync(StoatRestClient, StoatWebhookClient?, string, byte[], string, string, Embed[], MessageMasquerade, MessageInteractions, MessageReply[], MessageFlag?)" />
+    public static Task<UserMessage> SendFileAsync(this Channel channel, string filePath, string? text = null, Embed[]? embeds = null, MessageMasquerade? masquerade = null, MessageInteractions? interactions = null, MessageReply[]? replies = null, MessageFlag? flags = null)
+    => InternalSendFileAsync(channel.Client.Rest, null, channel.Id, System.IO.File.ReadAllBytes(filePath), filePath.Split('/').Last().Split('\\').Last(), text, embeds, masquerade, interactions, replies, flags);
+
+    /// <inheritdoc cref="InternalSendFileAsync(StoatRestClient, StoatWebhookClient?, string, byte[], string, string, Embed[], MessageMasquerade, MessageInteractions, MessageReply[], MessageFlag?)" />
+    public static Task<UserMessage> SendFileAsync(this Channel channel, byte[] bytes, string fileName, string? text = null, Embed[]? embeds = null, MessageMasquerade? masquerade = null, MessageInteractions? interactions = null, MessageReply[]? replies = null, MessageFlag? flags = null)
+    => InternalSendFileAsync(channel.Client.Rest, null, channel.Id, bytes, fileName, text, embeds, masquerade, interactions, replies, flags);
+
+    /// <inheritdoc cref="InternalSendFileAsync(StoatRestClient, StoatWebhookClient?, string, byte[], string, string, Embed[], MessageMasquerade, MessageInteractions, MessageReply[], MessageFlag?)" />
+    public static Task<UserMessage> SendFileAsync(this StoatRestClient rest, string channelId, string filePath, string? text = null, Embed[]? embeds = null, MessageMasquerade? masquerade = null, MessageInteractions? interactions = null, MessageReply[]? replies = null, MessageFlag? flags = null)
+    => InternalSendFileAsync(rest, null, channelId, System.IO.File.ReadAllBytes(filePath), filePath.Split('/').Last().Split('\\').Last(), text, embeds, masquerade, interactions, replies, flags);
+
+    /// <inheritdoc cref="InternalSendFileAsync(StoatRestClient, StoatWebhookClient?, string, byte[], string, string, Embed[], MessageMasquerade, MessageInteractions, MessageReply[], MessageFlag?)" />
+    public static Task<UserMessage> SendFileAsync(this StoatRestClient rest, string channelId, byte[] bytes, string fileName, string? text = null, Embed[]? embeds = null, MessageMasquerade? masquerade = null, MessageInteractions? interactions = null, MessageReply[]? replies = null, MessageFlag? flags = null)
+    => InternalSendFileAsync(rest, null, channelId, bytes, fileName, text, embeds, masquerade, interactions, replies, flags);
+
+    /// <inheritdoc cref="InternalSendFileAsync(StoatRestClient, StoatWebhookClient?, string, byte[], string, string, Embed[], MessageMasquerade, MessageInteractions, MessageReply[], MessageFlag?)" />
+    public static Task<UserMessage> SendFileAsync(this StoatWebhookClient webhook, string filePath, string? text = null, Embed[]? embeds = null, MessageMasquerade? masquerade = null, MessageInteractions? interactions = null, MessageReply[]? replies = null, MessageFlag? flags = null)
+    => InternalSendFileAsync(webhook.Client.Rest, webhook, null, System.IO.File.ReadAllBytes(filePath), filePath.Split('/').Last().Split('\\').Last(), text, embeds, masquerade, interactions, replies, flags);
+
+    /// <inheritdoc cref="InternalSendFileAsync(StoatRestClient, StoatWebhookClient?, string, byte[], string, string, Embed[], MessageMasquerade, MessageInteractions, MessageReply[], MessageFlag?)" />
+    public static Task<UserMessage> SendFileAsync(this StoatWebhookClient webhook, byte[] bytes, string fileName, string? text = null, Embed[]? embeds = null, MessageMasquerade? masquerade = null, MessageInteractions? interactions = null, MessageReply[]? replies = null, MessageFlag? flags = null)
+    => InternalSendFileAsync(webhook.Client.Rest, webhook, null, bytes, fileName, text, embeds, masquerade, interactions, replies, flags);
+
+    /// <summary>
+    /// Upload a file and send a message to the channel.
+    /// </summary>
+    /// <returns>
+    /// <see cref="UserMessage"/> 
+    /// </returns>
+    /// <exception cref="StoatArgumentException"></exception>
+    /// <exception cref="StoatRestException"></exception>
+    internal static async Task<UserMessage> InternalSendFileAsync(this StoatRestClient rest, StoatWebhookClient? webhook, string channelId, byte[] bytes, string fileName, string? text = null, Embed[]? embeds = null, MessageMasquerade? masquerade = null, MessageInteractions? interactions = null, MessageReply[]? replies = null, MessageFlag? flags = null)
+    {
+        Conditions.FileBytesEmpty(bytes, nameof(SendFileAsync));
+        Conditions.FileNameEmpty(fileName, nameof(SendFileAsync));
+        Conditions.MessageContentLength(text, nameof(SendFileAsync));
+
+        FileAttachment File = await rest.UploadFileAsync(bytes, fileName, UploadFileType.Attachment);
+        if (webhook != null)
+            return await webhook.SendMessageAsync(text, embeds, new string[] { File.Id }, masquerade, interactions, replies, flags).ConfigureAwait(false);
+        else
+            return await rest.SendMessageAsync(channelId, text, embeds, new string[] { File.Id }, masquerade, interactions, replies, flags).ConfigureAwait(false);
+    }
+
+    /// <inheritdoc cref="GetMessagesAsync(StoatRestClient, string, int, MessageSortType, bool, string, string, string)" />
+    public static Task<IReadOnlyCollection<Message>?> GetMessagesAsync(this Channel channel, int messageCount = 100, MessageSortType sortBy = MessageSortType.Latest, bool includeUserDetails = false, string nearbyMessageId = "", string beforeMessageId = "", string afterMessageId = "")
+        => GetMessagesAsync(channel.Client.Rest, channel.Id, messageCount, sortBy, includeUserDetails, nearbyMessageId, beforeMessageId, afterMessageId);
+
+    /// <summary>
+    /// Get a list of messages from the channel up to 100.
+    /// </summary>
+    /// <returns>
+    /// List of <see cref="Message"/>
+    /// </returns>
+    /// <exception cref="StoatArgumentException"></exception>
+    /// <exception cref="StoatRestException"></exception>
+    public static async Task<IReadOnlyCollection<Message>?> GetMessagesAsync(this StoatRestClient rest, string channelId, int messageCount = 100, MessageSortType sortBy = MessageSortType.Latest, bool includeUserDetails = false, string nearbyMessageId = "", string beforeMessageId = "", string afterMessageId = "")
+    {
+        Conditions.ChannelIdLength(channelId, nameof(GetMessagesAsync));
+        Conditions.MessageSearchCount(messageCount, nameof(GetMessagesAsync));
+
+        QueryBuilder QueryBuilder = new QueryBuilder()
+            .Add("limit", messageCount)
+            .Add("include_users", includeUserDetails)
+            .Add("sort", sortBy.ToString());
+
+        if (!string.IsNullOrEmpty(nearbyMessageId))
+        {
+            QueryBuilder.Add("nearby", nearbyMessageId);
+            Conditions.MessageNearbyIdLength(nearbyMessageId, nameof(GetMessagesAsync));
+        }
+        if (!string.IsNullOrEmpty(afterMessageId))
+        {
+            QueryBuilder.Add("after", afterMessageId);
+            Conditions.MessageNearbyIdLength(afterMessageId, nameof(GetMessagesAsync));
+        }
+        if (!string.IsNullOrEmpty(beforeMessageId))
+        {
+            QueryBuilder.Add("before", beforeMessageId);
+            Conditions.MessageNearbyIdLength(beforeMessageId, nameof(GetMessagesAsync));
+        }
+
+        if (includeUserDetails)
+        {
+            BulkMessagesJson? Data = await rest.GetAsync<BulkMessagesJson>($"channels/{channelId}/messages" + QueryBuilder.GetQuery());
+            if (Data == null)
+                return Array.Empty<Message>();
+
+            return Data.Messages.Select(x => Message.Create(rest.Client, x, Data.Users, Data.Members)).ToImmutableArray();
+        }
+        else
+        {
+            MessageJson[]? Data = await rest.GetAsync<MessageJson[]>($"channels/{channelId}/messages" + QueryBuilder.GetQuery());
+            if (Data == null)
+                return Array.Empty<Message>();
+
+            return Data.Select(x => Message.Create(rest.Client, x)).ToImmutableArray();
+        }
+    }
+
+    /// <inheritdoc cref="GetMessageAsync(StoatRestClient, string, string)" />
+    public static Task<Message?> GetMessageAsync(this Channel channel, string messageId)
+        => GetMessageAsync(channel.Client.Rest, channel.Id, messageId);
+
+    /// <summary>
+    /// Get a message from the current channel.
+    /// </summary>
+    /// <returns>
+    /// <see cref="Message"/> or <see langword="null" />
+    /// </returns>
+    /// <exception cref="StoatArgumentException"></exception>
+    /// <exception cref="StoatRestException"></exception>
+    public static async Task<Message?> GetMessageAsync(this StoatRestClient rest, string channelId, string messageId)
+    {
+        Conditions.ChannelIdLength(channelId, nameof(GetMessageAsync));
+        Conditions.MessageIdLength(messageId, nameof(GetMessageAsync));
+
+        MessageJson? Data = await rest.GetAsync<MessageJson>($"channels/{channelId}/messages/{messageId}");
+        if (Data == null)
+            return null;
+
+        Message msg = Message.Create(rest.Client, Data);
+
+        if (msg.Type == MessageType.User && rest.Client.Mode == ClientMode.Http)
+        {
+            rest.Client.InvokeLog("Http mode fetching ", StoatLogSeverity.Debug);
+            msg.Author = await rest.GetUserAsync(msg.AuthorId);
+        }
+        else
+        {
+            if (msg.Type == MessageType.User && msg.Author == null)
+                msg.Author = await rest.GetUserAsync(msg.AuthorId);
+        }
+
+        return msg;
+    }
+
+    /// <inheritdoc cref="EditMessageAsync(StoatRestClient, string, string, Option{string}, Option{Embed[]})" />
+    public static Task<UserMessage> EditMessageAsync(this UserMessage msg, Option<string?>? content = null, Option<Embed[]?>? embeds = null)
+        => EditMessageAsync(msg.Client.Rest, msg.ChannelId, msg.Id, content, embeds);
+
+    /// <summary>
+    /// Edit a message sent by the current user account with properties.
+    /// </summary>
+    /// <returns>
+    /// <see cref="UserMessage"/>
+    /// </returns>
+    /// <exception cref="StoatArgumentException"></exception>
+    /// <exception cref="StoatRestException"></exception>
+    public static async Task<UserMessage> EditMessageAsync(this StoatRestClient rest, string channelId, string messageId, Option<string?>? content = null, Option<Embed[]?>? embeds = null)
+    {
+        Conditions.ChannelIdLength(channelId, nameof(EditMessageAsync));
+        Conditions.MessageIdLength(messageId, nameof(EditMessageAsync));
+
+        SendMessageRequest Req = new SendMessageRequest();
+        if (content != null)
+            Req.content = Optional.Some(content.Value);
+
+        if (embeds != null)
+            Req.embeds = embeds.Value != null ? Optional.Some(embeds.Value.Select(x => x.ToJson()).ToArray()) : Optional.Some(Array.Empty<EmbedJson>());
+
+        MessageJson Data = await rest.PatchAsync<MessageJson>($"channels/{channelId}/messages/{messageId}", Req);
+        return (UserMessage)Message.Create(rest.Client, Data);
+    }
+
+    /// <inheritdoc cref="DeleteMessageAsync(StoatRestClient, string, string)" />
+    public static Task DeleteAsync(this Message mes)
+      => DeleteMessageAsync(mes.Channel.Client.Rest, mes.ChannelId, mes.Id);
+
+    /// <inheritdoc cref="DeleteMessageAsync(StoatRestClient, string, string)" />
+    public static Task DeleteMessageAsync(this Channel channel, Message message)
+        => DeleteMessageAsync(channel.Client.Rest, channel.Id, message.Id);
+
+    /// <inheritdoc cref="DeleteMessageAsync(StoatRestClient, string, string)" />
+    public static Task DeleteMessageAsync(this Channel channel, string messageId)
+        => DeleteMessageAsync(channel.Client.Rest, channel.Id, messageId);
+
+    /// <inheritdoc cref="DeleteMessageAsync(StoatRestClient, string, string)" />
+    public static Task DeleteMessageAsync(this StoatRestClient rest, Channel channel, Message message)
+        => DeleteMessageAsync(rest, channel.Id, message.Id);
+
+    /// <inheritdoc cref="DeleteMessageAsync(StoatRestClient, string, string)" />
+    public static Task DeleteMessageAsync(this StoatRestClient rest, Channel channel, string messageId)
+        => DeleteMessageAsync(rest, channel.Id, messageId);
+
+    /// <summary>
+    /// Delete a message from a channel.
+    /// </summary>
+    /// <exception cref="StoatArgumentException"></exception>
+    /// <exception cref="StoatRestException"></exception>
+    public static async Task DeleteMessageAsync(this StoatRestClient rest, string channelId, string messageId)
+    {
+        Conditions.ChannelIdLength(channelId, nameof(DeleteMessageAsync));
+        Conditions.MessageIdLength(messageId, nameof(DeleteMessageAsync));
+
+        await rest.DeleteAsync($"channels/{channelId}/messages/{messageId}");
+    }
+
+    /// <inheritdoc cref="DeleteMessagesAsync(StoatRestClient, string, string[])" />
+    public static Task DeleteMessagesAsync(this Channel channel, Message[] messages)
+        => DeleteMessagesAsync(channel.Client.Rest, channel.Id, messages.Select(x => x.Id).ToArray());
+
+    /// <inheritdoc cref="DeleteMessagesAsync(StoatRestClient, string, string[])" />
+    public static Task DeleteMessagesAsync(this Channel channel, string[] messageIds)
+        => DeleteMessagesAsync(channel.Client.Rest, channel.Id, messageIds);
+
+    /// <summary>
+    /// Delete a list of messages from a channel.
+    /// </summary>
+    /// <exception cref="StoatArgumentException"></exception>
+    /// <exception cref="StoatRestException"></exception>
+    public static async Task DeleteMessagesAsync(this StoatRestClient rest, string channelId, string[] messageIds)
+    {
+        Conditions.ChannelIdLength(channelId, nameof(DeleteMessagesAsync));
+        Conditions.MessageIdsCount(messageIds, nameof(DeleteMessagesAsync));
+
+        await rest.DeleteAsync($"channels/{channelId}/messages/bulk", new BulkDeleteMessagesRequest
+        {
+            ids = messageIds
+        });
+    }
+
+    /// <inheritdoc cref="CloseDMChannelAsync(StoatRestClient, string)" />
+    public static Task CloseAsync(this DMChannel dm)
+        => CloseDMChannelAsync(dm.Client.Rest, dm.Id);
+
+    /// <inheritdoc cref="CloseDMChannelAsync(StoatRestClient, string)" />
+    public static Task CloseAsync(this StoatRestClient rest, DMChannel dm)
+        => CloseDMChannelAsync(rest, dm.Id);
+
+    /// <summary>
+    /// Close a DM channel.
+    /// </summary>
+    /// <exception cref="StoatArgumentException"></exception>
+    /// <exception cref="StoatRestException"></exception>
+    public static async Task CloseDMChannelAsync(this StoatRestClient rest, string channelId)
+    {
+        Conditions.ChannelIdLength(channelId, nameof(CloseDMChannelAsync));
+
+        await rest.DeleteAsync($"channels/{channelId}");
+    }
+}
