@@ -1,7 +1,9 @@
-﻿namespace StoatSharp;
+namespace StoatSharp;
 
 public class AccountLogin
 {
+    public AccountLogin() { }
+
     internal AccountLogin(AccountLoginJson json)
     {
         if (json == null)
